@@ -4,3 +4,6 @@ kuenstler.db-shm
 __pycache__/
 *.pyc
 docs/*.html
+logs/
+.imported
+venv/
