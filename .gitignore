@@ -1,0 +1,6 @@
+kuenstler.db
+kuenstler.db-wal
+kuenstler.db-shm
+__pycache__/
+*.pyc
+docs/*.html
