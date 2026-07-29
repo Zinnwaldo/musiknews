@@ -28,7 +28,7 @@ PY="venv/bin/python3"
     echo "Keine SenderHitliste*.xlsx in $WATCH_DIR gefunden — Import übersprungen."
   else
     # Schon importiert? (Dateiname + Änderungszeit als Kennung)
-    STAMP=$(stat -f "%N %m" "$NEWEST" 2>/dev/null || stat -c "%n %Y" "$NEWEST")
+    STAMP=$(stat -c "%n %Y" "$NEWEST" 2>/dev/null || stat -f "%N %m" "$NEWEST")
     if grep -qxF "$STAMP" .imported 2>/dev/null; then
       echo "Bereits importiert: $NEWEST — übersprungen."
     else
