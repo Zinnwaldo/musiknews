@@ -48,16 +48,24 @@ def load_kalender_events(conn: sqlite3.Connection, heute: str) -> list[dict]:
 
 
 def load_news(conn: sqlite3.Connection, heute: str, lookback_days: int = 3) -> list[dict]:
+    """Lädt alle relevanten News:
+
+    - frisch gefunden (letzte lookback_days Tage), egal wann das Ereignis ist
+    - ODER Ereignis steht noch bevor (Konzert, VÖ-Termin …) — bleibt
+      sichtbar, bis es vorbei ist
+    """
     conn.row_factory = sqlite3.Row
-    cutoff = (date.fromisoformat(heute) - timedelta(days=lookback_days)).isoformat()
+    heute_dt = date.fromisoformat(heute)
+    cutoff = (heute_dt - timedelta(days=lookback_days)).isoformat()
     rows = conn.execute(
         """SELECT n.typ, n.ereignis_datum, n.text, n.quellen,
                   n.verifiziert, n.gefunden_am, k.name AS kuenstler
            FROM news n
            JOIN kuenstler k ON n.kuenstler_id = k.id
            WHERE n.gefunden_am >= ?
+              OR (n.ereignis_datum IS NOT NULL AND n.ereignis_datum >= ?)
            ORDER BY n.gefunden_am DESC, k.name""",
-        (cutoff,),
+        (cutoff, heute),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -123,7 +131,7 @@ def _render_event(e: dict) -> str:
             f'</div>')
 
 
-def _render_news_item(n: dict) -> str:
+def _render_news_item(n: dict, heute: str) -> str:
     typ_label = TYP_LABELS.get(n["typ"], n["typ"])
     verif = "" if n.get("verifiziert") else ' <span class="unverified">⚠ unverifiziert</span>'
     quellen = _quellen_links(n.get("quellen", "[]"))
@@ -132,9 +140,10 @@ def _render_news_item(n: dict) -> str:
     datum = ""
     if n.get("ereignis_datum"):
         datum = f' <span class="datum">({n["ereignis_datum"]})</span>'
+    neu = ' <span class="neu">NEU</span>' if n.get("gefunden_am") == heute else ""
 
     return (f'<div class="news-item">'
-            f'<span class="typ">{typ_label}</span> '
+            f'<span class="typ">{typ_label}</span>{neu} '
             f'<strong>{kuenstler}</strong>: {text}{datum}{verif}'
             f'{" " + quellen if quellen else ""}'
             f'</div>')
@@ -161,7 +170,7 @@ def render_page(heute: str, events: list[dict], news: list[dict]) -> str:
     if news:
         sections.append('<h3>🔍 Aktuelle News</h3>')
         for n in news:
-            sections.append(_render_news_item(n))
+            sections.append(_render_news_item(n, heute))
 
     dates = sorted(events_by_date.keys())
     if dates:
@@ -216,6 +225,8 @@ h3 {{ margin: 1rem 0 0.5rem; color: var(--accent); }}
 .event.highlight {{ background: var(--highlight-bg); border-color: #ffc107; }}
 .typ {{ font-weight: 600; }}
 .unverified {{ color: var(--warn); font-weight: 600; }}
+.neu {{ background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 700;
+        padding: 0.1rem 0.4rem; border-radius: 4px; vertical-align: middle; }}
 .datum {{ color: #6c757d; }}
 .empty {{ color: #6c757d; font-style: italic; }}
 a {{ color: var(--accent); }}

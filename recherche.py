@@ -20,6 +20,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from config import (
     CLAUDE_TIMEOUT,
     DB_PATH,
     MV_STAEDTE,
+    RECHERCHE_WORKERS,
     TIER_A_TAEGLICH,
     TIER_B_PRO_TAG,
 )
@@ -199,53 +201,67 @@ def run(limit: int | None = None, dry_run: bool = False):
 
     stats = {"gesucht": 0, "gefunden": 0, "duplikate": 0, "fehler": 0}
 
-    for i, artist in enumerate(artists):
-        print(f"  [{i+1}/{len(artists)}] [{artist['tier']}] {artist['name']} …",
-              end=" ", flush=True)
+    # Recherche parallel (nur die CLI-Aufrufe); DB-Schreiben im Hauptthread
+    with ThreadPoolExecutor(max_workers=RECHERCHE_WORKERS) as pool:
+        futures = {
+            pool.submit(recherche_kuenstler, artist["name"], heute): artist
+            for artist in artists
+        }
 
-        results = recherche_kuenstler(artist["name"], heute)
-        stats["gesucht"] += 1
+        done = 0
+        for future in as_completed(futures):
+            artist = futures[future]
+            done += 1
+            stats["gesucht"] += 1
 
-        if not results:
-            print("keine News")
-            continue
-
-        count = 0
-        for item in results:
-            if not isinstance(item, dict) or "typ" not in item or "text" not in item:
+            try:
+                results = future.result()
+            except Exception as e:
+                print(f"  [{done}/{len(artists)}] [{artist['tier']}] {artist['name']} … Fehler: {e}")
                 stats["fehler"] += 1
                 continue
 
-            quellen = item.get("quellen", [])
-            if not quellen:
+            if not results:
+                print(f"  [{done}/{len(artists)}] [{artist['tier']}] {artist['name']} … keine News")
                 continue
 
-            h = _make_hash(artist["id"], item["typ"], item.get("ereignis_datum"))
+            count = 0
+            for item in results:
+                if not isinstance(item, dict) or "typ" not in item or "text" not in item:
+                    stats["fehler"] += 1
+                    continue
 
-            try:
-                conn.execute(
-                    """INSERT INTO news
-                       (kuenstler_id, typ, ereignis_datum, text, quellen,
-                        verifiziert, gefunden_am, hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        artist["id"],
-                        item["typ"],
-                        item.get("ereignis_datum"),
-                        item["text"],
-                        json.dumps(quellen),
-                        1 if item.get("verifiziert") else 0,
-                        heute.isoformat(),
-                        h,
-                    ),
-                )
-                count += 1
-                stats["gefunden"] += 1
-            except sqlite3.IntegrityError:
-                stats["duplikate"] += 1
+                quellen = item.get("quellen", [])
+                if not quellen:
+                    continue
 
-        print(f"{count} neu" if count else "nur Duplikate")
-        conn.commit()
+                h = _make_hash(artist["id"], item["typ"], item.get("ereignis_datum"))
+
+                try:
+                    conn.execute(
+                        """INSERT INTO news
+                           (kuenstler_id, typ, ereignis_datum, text, quellen,
+                            verifiziert, gefunden_am, hash)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            artist["id"],
+                            item["typ"],
+                            item.get("ereignis_datum"),
+                            item["text"],
+                            json.dumps(quellen),
+                            1 if item.get("verifiziert") else 0,
+                            heute.isoformat(),
+                            h,
+                        ),
+                    )
+                    count += 1
+                    stats["gefunden"] += 1
+                except sqlite3.IntegrityError:
+                    stats["duplikate"] += 1
+
+            print(f"  [{done}/{len(artists)}] [{artist['tier']}] {artist['name']} … "
+                  + (f"{count} neu" if count else "nur Duplikate"))
+            conn.commit()
 
     conn.close()
     print(f"\nRecherche abgeschlossen: {stats['gesucht']} gesucht, "

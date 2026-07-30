@@ -32,6 +32,7 @@ MV_STAEDTE = [
 # Claude Code CLI (läuft über Max-Abo, kein API-Key nötig)
 CLAUDE_CMD = "claude"
 CLAUDE_TIMEOUT = 300  # Sekunden pro Künstler (Websuche braucht Zeit)
+RECHERCHE_WORKERS = 3  # parallele Recherchen (mehr = schneller, aber mehr Abo-Last)
 
 # --- MusicBrainz (Phase 2) ---
 MUSICBRAINZ_USER_AGENT = "MusikNewsTool/1.0 (stotco@googlemail.com)"
