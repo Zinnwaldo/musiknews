@@ -16,11 +16,15 @@ Ergebnisse → Tabelle `news` mit Dedupe über hash(kuenstler, typ, ereignis_dat
 import argparse
 import hashlib
 import json
+import signal
 import sqlite3
 import subprocess
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+
+# Sauberes Verhalten bei abgeschnittener Pipe (z. B. `| head`)
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 from config import (
     CLAUDE_CMD,
@@ -102,7 +106,9 @@ def recherche_kuenstler(name: str, heute: date) -> list[dict]:
 
     try:
         result = subprocess.run(
-            [CLAUDE_CMD, "-p", prompt, "--output-format", "json"],
+            [CLAUDE_CMD, "-p", prompt,
+             "--output-format", "json",
+             "--allowedTools", "WebSearch", "WebFetch"],
             capture_output=True, text=True, timeout=CLAUDE_TIMEOUT,
         )
     except FileNotFoundError:
