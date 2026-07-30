@@ -32,6 +32,8 @@ from config import (
     CLAUDE_TIMEOUT,
     DB_PATH,
     MV_STAEDTE,
+    RECHERCHE_MODEL_A,
+    RECHERCHE_MODEL_BC,
     RECHERCHE_WORKERS,
     TIER_A_TAEGLICH,
     TIER_B_PRO_TAG,
@@ -49,6 +51,18 @@ CREATE TABLE IF NOT EXISTS news (
     verifiziert     INTEGER DEFAULT 0,
     gefunden_am     TEXT    NOT NULL,
     hash            TEXT    NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS verbrauch (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    datum           TEXT    NOT NULL,
+    kuenstler_id    INTEGER REFERENCES kuenstler(id),
+    model           TEXT,
+    input_tokens    INTEGER DEFAULT 0,
+    output_tokens   INTEGER DEFAULT 0,
+    web_suchen      INTEGER DEFAULT 0,
+    kosten_usd      REAL    DEFAULT 0,
+    dauer_ms        INTEGER DEFAULT 0
 );
 """
 
@@ -77,7 +91,11 @@ def _build_prompt(name: str, heute: date, fenster_tage: int = 10) -> str:
 
     return f"""Recherchiere aktuelle Informationen über den Musiker/die Band "{name}".
 
-Zeitfenster: {heute.isoformat()} bis {bis.isoformat()}, plus Neuankündigungen.
+Relevant sind:
+- Ereignisse der letzten 7 Tage (z. B. Todesfälle, Preise, Veröffentlichungen)
+- Bevorstehende Termine bis {bis.isoformat()} und darüber hinaus
+- Frische Ankündigungen (Alben, Singles, Touren), auch wenn der Termin später liegt
+(Heute ist der {heute.isoformat()}.)
 
 Gesucht:
 1. Neue Alben oder Singles (angekündigt oder erschienen)
@@ -88,6 +106,7 @@ Gesucht:
 WICHTIG:
 - NUR belegbare Fakten mit konkreter Quell-URL.
 - Keine Spekulationen, keine Gerüchte.
+- Nutze höchstens 3 Websuchen.
 - Wenn du nichts Aktuelles findest, antworte mit einem leeren Array.
 
 Antworte ausschließlich als JSON-Array. Jedes Element:
@@ -102,14 +121,48 @@ Antworte ausschließlich als JSON-Array. Jedes Element:
 Beispiel für eine leere Antwort: []"""
 
 
-def recherche_kuenstler(name: str, heute: date) -> list[dict]:
-    """Führt eine Claude-Code-CLI-Suche für einen Künstler durch."""
+def _extract_usage(cli_output: dict | None, model: str) -> dict:
+    """Zieht Verbrauchsdaten aus der CLI-JSON-Antwort.
+
+    Tokens und Websuchen stehen in modelUsage (pro beteiligtem Modell,
+    auch Submodelle der Suche); total_cost_usd ist der API-Gegenwert.
+    """
+    usage = {"model": model, "input_tokens": 0, "output_tokens": 0,
+             "web_suchen": 0, "kosten_usd": 0.0, "dauer_ms": 0}
+    if not isinstance(cli_output, dict):
+        return usage
+
+    model_usage = cli_output.get("modelUsage", {})
+    if model_usage:
+        for mu in model_usage.values():
+            usage["input_tokens"] += (mu.get("inputTokens", 0)
+                                      + mu.get("cacheReadInputTokens", 0)
+                                      + mu.get("cacheCreationInputTokens", 0))
+            usage["output_tokens"] += mu.get("outputTokens", 0)
+            usage["web_suchen"] += mu.get("webSearchRequests", 0)
+    else:
+        u = cli_output.get("usage", {})
+        usage["input_tokens"] = (u.get("input_tokens", 0)
+                                 + u.get("cache_creation_input_tokens", 0)
+                                 + u.get("cache_read_input_tokens", 0))
+        usage["output_tokens"] = u.get("output_tokens", 0)
+        usage["web_suchen"] = u.get("server_tool_use", {}).get("web_search_requests", 0)
+
+    usage["kosten_usd"] = cli_output.get("total_cost_usd", 0.0) or 0.0
+    usage["dauer_ms"] = cli_output.get("duration_api_ms", 0) or 0
+    return usage
+
+
+def recherche_kuenstler(name: str, heute: date, model: str) -> tuple[list[dict], dict]:
+    """Führt eine Claude-Code-CLI-Suche durch. Returns (news, verbrauch)."""
     prompt = _build_prompt(name, heute)
+    leer = _extract_usage(None, model)
 
     try:
         result = subprocess.run(
             [CLAUDE_CMD, "-p", prompt,
              "--output-format", "json",
+             "--model", model,
              "--allowedTools", "WebSearch", "WebFetch"],
             capture_output=True, text=True, timeout=CLAUDE_TIMEOUT,
         )
@@ -120,17 +173,19 @@ def recherche_kuenstler(name: str, heute: date) -> list[dict]:
         sys.exit(1)
     except subprocess.TimeoutExpired:
         print(f"Timeout ({CLAUDE_TIMEOUT}s)", file=sys.stderr)
-        return []
+        return [], leer
 
     if result.returncode != 0:
         stderr = result.stderr.strip()[:200] if result.stderr else ""
         print(f"CLI-Fehler (exit {result.returncode}): {stderr}", file=sys.stderr)
-        return []
+        return [], leer
 
     try:
         cli_output = json.loads(result.stdout)
     except json.JSONDecodeError:
         cli_output = None
+
+    usage = _extract_usage(cli_output, model)
 
     if isinstance(cli_output, dict) and "result" in cli_output:
         full_text = cli_output["result"]
@@ -142,16 +197,16 @@ def recherche_kuenstler(name: str, heute: date) -> list[dict]:
     start = full_text.find("[")
     end = full_text.rfind("]")
     if start == -1 or end == -1:
-        return []
+        return [], usage
 
     try:
         results = json.loads(full_text[start:end + 1])
         if not isinstance(results, list):
-            return []
-        return results
+            return [], usage
+        return results, usage
     except json.JSONDecodeError:
         print(f"JSON-Parse-Fehler", file=sys.stderr)
-        return []
+        return [], usage
 
 
 def get_tier_artists(conn: sqlite3.Connection, heute: date) -> list[dict]:
@@ -201,10 +256,16 @@ def run(limit: int | None = None, dry_run: bool = False):
 
     stats = {"gesucht": 0, "gefunden": 0, "duplikate": 0, "fehler": 0}
 
+    verbrauch_summe = {"input_tokens": 0, "output_tokens": 0,
+                       "web_suchen": 0, "kosten_usd": 0.0}
+
     # Recherche parallel (nur die CLI-Aufrufe); DB-Schreiben im Hauptthread
     with ThreadPoolExecutor(max_workers=RECHERCHE_WORKERS) as pool:
         futures = {
-            pool.submit(recherche_kuenstler, artist["name"], heute): artist
+            pool.submit(
+                recherche_kuenstler, artist["name"], heute,
+                RECHERCHE_MODEL_A if artist["tier"] == "A" else RECHERCHE_MODEL_BC,
+            ): artist
             for artist in artists
         }
 
@@ -215,11 +276,24 @@ def run(limit: int | None = None, dry_run: bool = False):
             stats["gesucht"] += 1
 
             try:
-                results = future.result()
+                results, usage = future.result()
             except Exception as e:
                 print(f"  [{done}/{len(artists)}] [{artist['tier']}] {artist['name']} … Fehler: {e}")
                 stats["fehler"] += 1
                 continue
+
+            conn.execute(
+                """INSERT INTO verbrauch
+                   (datum, kuenstler_id, model, input_tokens, output_tokens,
+                    web_suchen, kosten_usd, dauer_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (heute.isoformat(), artist["id"], usage["model"],
+                 usage["input_tokens"], usage["output_tokens"],
+                 usage["web_suchen"], usage["kosten_usd"], usage["dauer_ms"]),
+            )
+            conn.commit()
+            for k in verbrauch_summe:
+                verbrauch_summe[k] += usage[k]
 
             if not results:
                 print(f"  [{done}/{len(artists)}] [{artist['tier']}] {artist['name']} … keine News")
@@ -267,6 +341,10 @@ def run(limit: int | None = None, dry_run: bool = False):
     print(f"\nRecherche abgeschlossen: {stats['gesucht']} gesucht, "
           f"{stats['gefunden']} neu, {stats['duplikate']} Duplikate, "
           f"{stats['fehler']} Fehler")
+    mio = (verbrauch_summe["input_tokens"] + verbrauch_summe["output_tokens"]) / 1e6
+    print(f"Abo-Verbrauch: {verbrauch_summe['web_suchen']} Websuchen, "
+          f"{mio:.2f} Mio. Tokens, "
+          f"≈ ${verbrauch_summe['kosten_usd']:.2f} API-Gegenwert")
 
 
 def main():

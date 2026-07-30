@@ -70,6 +70,23 @@ def load_news(conn: sqlite3.Connection, heute: str, lookback_days: int = 3) -> l
     return [dict(r) for r in rows]
 
 
+def load_verbrauch(conn: sqlite3.Connection, heute: str) -> dict | None:
+    """Summiert den Abo-Verbrauch des letzten Recherche-Laufs."""
+    try:
+        row = conn.execute(
+            """SELECT COUNT(*) AS n, SUM(input_tokens + output_tokens) AS tokens,
+                      SUM(web_suchen) AS suchen, SUM(kosten_usd) AS kosten
+               FROM verbrauch
+               WHERE datum = (SELECT MAX(datum) FROM verbrauch)""",
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row or not row[0]:
+        return None
+    return {"recherchen": row[0], "tokens": row[1] or 0,
+            "suchen": row[2] or 0, "kosten": row[3] or 0.0}
+
+
 # ---------------------------------------------------------------------------
 # HTML-Rendering
 # ---------------------------------------------------------------------------
@@ -124,7 +141,8 @@ def _render_event(e: dict) -> str:
     css_class = "event highlight" if e.get("hervorgehoben") else "event"
 
     text = html.escape(e["text"])
-    return (f'<div class="{css_class}">'
+    return (f'<div class="{css_class}" data-kind="kalender" '
+            f'data-verif="{1 if e.get("verifiziert") else 0}">'
             f'<span class="typ">{typ_label}</span> '
             f'{text}{verif}'
             f'{" " + quellen if quellen else ""}'
@@ -142,14 +160,16 @@ def _render_news_item(n: dict, heute: str) -> str:
         datum = f' <span class="datum">({n["ereignis_datum"]})</span>'
     neu = ' <span class="neu">NEU</span>' if n.get("gefunden_am") == heute else ""
 
-    return (f'<div class="news-item">'
+    return (f'<div class="news-item" data-kind="news" '
+            f'data-verif="{1 if n.get("verifiziert") else 0}">'
             f'<span class="typ">{typ_label}</span>{neu} '
             f'<strong>{kuenstler}</strong>: {text}{datum}{verif}'
             f'{" " + quellen if quellen else ""}'
             f'</div>')
 
 
-def render_page(heute: str, events: list[dict], news: list[dict]) -> str:
+def render_page(heute: str, events: list[dict], news: list[dict],
+                verbrauch: dict | None = None) -> str:
     """Rendert die komplette HTML-Seite."""
     heute_dt = date.fromisoformat(heute)
 
@@ -188,6 +208,16 @@ def render_page(heute: str, events: list[dict], news: list[dict]) -> str:
             'Das Tool läuft — es gibt schlicht nichts zu melden.</p>')
 
     content = "\n".join(sections)
+
+    verbrauch_html = ""
+    if verbrauch:
+        mio = verbrauch["tokens"] / 1e6
+        verbrauch_html = (
+            f'<p>Abo-Verbrauch letzter Recherche-Lauf: '
+            f'{verbrauch["recherchen"]} Recherchen · '
+            f'{verbrauch["suchen"]} Websuchen · '
+            f'{mio:.2f} Mio. Tokens · '
+            f'≈ ${verbrauch["kosten"]:.2f} API-Gegenwert</p>')
 
     return f"""<!DOCTYPE html>
 <html lang="de">
@@ -232,17 +262,99 @@ h3 {{ margin: 1rem 0 0.5rem; color: var(--accent); }}
 a {{ color: var(--accent); }}
 footer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);
           font-size: 0.8rem; color: #6c757d; }}
+.controls {{ position: sticky; top: 0; background: var(--bg); padding: 0.5rem 0;
+             margin-bottom: 0.5rem; z-index: 10; border-bottom: 1px solid var(--border); }}
+.controls input[type="search"] {{
+  width: 100%; padding: 0.5rem 0.75rem; font-size: 1rem;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card); color: var(--fg); margin-bottom: 0.5rem;
+}}
+.chips {{ display: flex; flex-wrap: wrap; gap: 0.4rem; }}
+.chip {{ border: 1px solid var(--border); background: var(--card); color: var(--fg);
+         border-radius: 999px; padding: 0.25rem 0.8rem; font-size: 0.85rem;
+         cursor: pointer; }}
+.chip.active {{ background: var(--accent); color: #fff; border-color: var(--accent); }}
+.count {{ margin-left: auto; align-self: center; font-size: 0.85rem; color: #6c757d; }}
+.hidden {{ display: none !important; }}
 </style>
 </head>
 <body>
 <h1>Musiknews — NDR 1 Radio MV</h1>
 <p class="meta">Generiert: {_format_datum(heute)} · Rechercheansätze mit Belegen, keine sendefertigen Fakten</p>
+<div class="controls">
+  <input type="search" id="suche" placeholder="Suchen … (Künstler, Titel, Ort)" autocomplete="off">
+  <div class="chips">
+    <button class="chip active" data-filter="kind" data-value="">Alles</button>
+    <button class="chip" data-filter="kind" data-value="kalender">📅 Jubiläen</button>
+    <button class="chip" data-filter="kind" data-value="news">🔍 News</button>
+    <button class="chip" data-filter="verif" data-value="1">✓ verifiziert</button>
+    <button class="chip" data-filter="verif" data-value="0">⚠ unverifiziert</button>
+    <span class="count" id="count"></span>
+  </div>
+</div>
 {content}
 <footer>
   <p>⚠ = unverifiziert (weniger als zwei unabhängige Quellen).
   Alle Angaben sind Rechercheansätze und müssen redaktionell geprüft werden.</p>
+  {verbrauch_html}
   <p>Generiert am {heute} · Musiknews-Tool v1.0</p>
 </footer>
+<script>
+(function () {{
+  var suche = document.getElementById('suche');
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip'));
+  var items = Array.prototype.slice.call(document.querySelectorAll('[data-kind]'));
+  var countEl = document.getElementById('count');
+  var aktiv = {{ kind: '', verif: '' }};
+
+  function anwenden() {{
+    var q = suche.value.trim().toLowerCase();
+    var sichtbar = 0;
+    items.forEach(function (el) {{
+      var passt = true;
+      if (aktiv.kind && el.dataset.kind !== aktiv.kind) passt = false;
+      if (aktiv.verif !== '' && el.dataset.verif !== aktiv.verif) passt = false;
+      if (q && el.textContent.toLowerCase().indexOf(q) === -1) passt = false;
+      el.classList.toggle('hidden', !passt);
+      if (passt) sichtbar++;
+    }});
+    // Datums-Überschriften ohne sichtbare Einträge ausblenden
+    Array.prototype.slice.call(document.querySelectorAll('h2, h3')).forEach(function (h) {{
+      var el = h.nextElementSibling, hatSichtbares = false;
+      while (el && !/^H[23]$/.test(el.tagName)) {{
+        if (el.dataset && el.dataset.kind && !el.classList.contains('hidden')) {{
+          hatSichtbares = true; break;
+        }}
+        el = el.nextElementSibling;
+      }}
+      var gefiltert = aktiv.kind || aktiv.verif !== '' || q;
+      h.classList.toggle('hidden', Boolean(gefiltert) && !hatSichtbares);
+    }});
+    countEl.textContent = (aktiv.kind || aktiv.verif !== '' || q)
+      ? sichtbar + ' Treffer' : '';
+  }}
+
+  chips.forEach(function (chip) {{
+    chip.addEventListener('click', function () {{
+      var f = chip.dataset.filter, v = chip.dataset.value;
+      if (f === 'kind') {{
+        aktiv.kind = (aktiv.kind === v) ? '' : v;
+        if (v === '') aktiv.kind = '';
+      }}
+      if (f === 'verif') aktiv.verif = (aktiv.verif === v) ? '' : v;
+      chips.forEach(function (c) {{
+        if (c.dataset.filter === 'kind')
+          c.classList.toggle('active', c.dataset.value === aktiv.kind ||
+                                       (aktiv.kind === '' && c.dataset.value === ''));
+        if (c.dataset.filter === 'verif')
+          c.classList.toggle('active', c.dataset.value === aktiv.verif);
+      }});
+      anwenden();
+    }});
+  }});
+  suche.addEventListener('input', anwenden);
+}})();
+</script>
 </body>
 </html>"""
 
@@ -335,9 +447,10 @@ def run(no_encrypt: bool = False, no_deploy: bool = False):
 
     events = load_kalender_events(conn, heute)
     news = load_news(conn, heute)
+    verbrauch = load_verbrauch(conn, heute)
     conn.close()
 
-    page = render_page(heute, events, news)
+    page = render_page(heute, events, news, verbrauch)
 
     index_path = DOCS_DIR / "index.html"
     index_path.write_text(page, encoding="utf-8")

@@ -34,6 +34,11 @@ CLAUDE_CMD = "claude"
 CLAUDE_TIMEOUT = 300  # Sekunden pro Künstler (Websuche braucht Zeit)
 RECHERCHE_WORKERS = 3  # parallele Recherchen (mehr = schneller, aber mehr Abo-Last)
 
+# Modell-Steuerung: A-Stars bekommen das starke Modell, B/C das sparsame.
+# Schont das Max-Abo erheblich — Haiku verbraucht nur einen Bruchteil.
+RECHERCHE_MODEL_A = "claude-sonnet-5"
+RECHERCHE_MODEL_BC = "claude-haiku-4-5-20251001"
+
 # --- MusicBrainz (Phase 2) ---
 MUSICBRAINZ_USER_AGENT = "MusikNewsTool/1.0 (stotco@googlemail.com)"
 MUSICBRAINZ_RATE_LIMIT = 1.0  # Sekunden zwischen Requests
