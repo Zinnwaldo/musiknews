@@ -16,6 +16,8 @@ PY="venv/bin/python3"
 
 {
   echo "=== Täglicher Lauf $(date '+%Y-%m-%d %H:%M:%S') ==="
+  # Code-Updates automatisch holen (nur fast-forward, gefahrlos)
+  git pull -q --ff-only 2>/dev/null && echo "--- git pull OK" || echo "--- git pull übersprungen"
   "$PY" kalender.py    && echo "--- kalender OK"   || echo "!!! kalender FEHLER"
   "$PY" recherche.py   && echo "--- recherche OK"  || echo "!!! recherche FEHLER"
   "$PY" digest.py      && echo "--- digest OK"     || echo "!!! digest FEHLER"

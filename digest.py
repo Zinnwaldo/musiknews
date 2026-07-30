@@ -171,6 +171,13 @@ def render_page(heute: str, events: list[dict], news: list[dict]) -> str:
             for e in events_by_date[d]:
                 sections.append(_render_event(e))
 
+    if not sections:
+        sections.append(f'<h2>📅 {_format_datum(heute)}</h2>')
+        sections.append(
+            '<p class="empty">Keine runden Jubiläen und keine News im aktuellen '
+            f'Fenster (heute + {KALENDER_FENSTER_TAGE} Tage). '
+            'Das Tool läuft — es gibt schlicht nichts zu melden.</p>')
+
     content = "\n".join(sections)
 
     return f"""<!DOCTYPE html>

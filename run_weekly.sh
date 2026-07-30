@@ -20,6 +20,8 @@ PY="venv/bin/python3"
 
 {
   echo "=== Wöchentlicher Lauf $(date '+%Y-%m-%d %H:%M:%S') ==="
+  # Code-Updates automatisch holen (nur fast-forward, gefahrlos)
+  git pull -q --ff-only 2>/dev/null && echo "--- git pull OK" || echo "--- git pull übersprungen"
 
   # Neueste SenderHitliste-Datei finden (nach Änderungsdatum)
   NEWEST=$(ls -t "$WATCH_DIR"/SenderHitliste*.xlsx 2>/dev/null | head -1)
