@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -112,10 +113,10 @@ def _render_event(e: dict) -> str:
     typ_label = TYP_LABELS.get(e["typ"], e["typ"])
     verif = "" if e.get("verifiziert") else ' <span class="unverified">⚠ unverifiziert</span>'
     quellen = _quellen_links(e.get("quellen", "[]"))
-    highlight = ' class="highlight"' if e.get("hervorgehoben") else ""
+    css_class = "event highlight" if e.get("hervorgehoben") else "event"
 
     text = html.escape(e["text"])
-    return (f'<div class="event"{highlight}>'
+    return (f'<div class="{css_class}">'
             f'<span class="typ">{typ_label}</span> '
             f'{text}{verif}'
             f'{" " + quellen if quellen else ""}'
@@ -233,10 +234,10 @@ footer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--borde
 # ---------------------------------------------------------------------------
 
 def encrypt_file(html_path: Path, password: str) -> bool:
-    """Verschlüsselt eine HTML-Datei mit StatiCrypt."""
+    """Verschlüsselt eine HTML-Datei mit StatiCrypt (v3-CLI) in-place."""
     if not shutil.which("staticrypt"):
         if shutil.which("npx"):
-            cmd = ["npx", "staticrypt"]
+            cmd = ["npx", "--yes", "staticrypt"]
         else:
             print("WARNUNG: staticrypt nicht gefunden, Seite bleibt unverschlüsselt.",
                   file=sys.stderr)
@@ -244,18 +245,40 @@ def encrypt_file(html_path: Path, password: str) -> bool:
     else:
         cmd = ["staticrypt"]
 
-    try:
-        subprocess.run(
-            [*cmd, str(html_path), password,
-             "-o", str(html_path),
-             "--title", "Musiknews — NDR 1 Radio MV",
-             "--remember", "7"],
-            check=True, capture_output=True, text=True,
-        )
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            subprocess.run(
+                [*cmd, str(html_path),
+                 "-p", password,
+                 "-d", tmp,
+                 "--remember", "7",
+                 "--short",
+                 "--template-title", "Musiknews — NDR 1 Radio MV",
+                 "--template-button", "Öffnen",
+                 "--template-placeholder", "Passwort",
+                 "--template-error", "Falsches Passwort",
+                 "--template-remember", "Angemeldet bleiben",
+                 "--template-instructions", "Interner Bereich — bitte Redaktions-Passwort eingeben."],
+                check=True, capture_output=True, text=True,
+                cwd=html_path.parent,
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"WARNUNG: StatiCrypt-Fehler: {e.stderr}", file=sys.stderr)
+            return False
+
+        # StatiCrypt legt die Datei unter <tmp>/<name> ab (ggf. verschachtelt)
+        candidates = list(Path(tmp).rglob(html_path.name))
+        if not candidates:
+            print("WARNUNG: StatiCrypt hat keine Ausgabedatei erzeugt.", file=sys.stderr)
+            return False
+
+        encrypted = candidates[0].read_text(encoding="utf-8")
+        if "staticrypt" not in encrypted.lower():
+            print("WARNUNG: StatiCrypt-Ausgabe sieht nicht verschlüsselt aus.", file=sys.stderr)
+            return False
+
+        html_path.write_text(encrypted, encoding="utf-8")
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"WARNUNG: StatiCrypt-Fehler: {e.stderr}", file=sys.stderr)
-        return False
 
 
 def deploy_pages(docs_dir: Path):
