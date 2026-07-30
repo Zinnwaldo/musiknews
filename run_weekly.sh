@@ -23,6 +23,11 @@ PY="venv/bin/python3"
   # Code-Updates automatisch holen (nur fast-forward, gefahrlos)
   git pull -q --ff-only 2>/dev/null && echo "--- git pull OK" || echo "--- git pull übersprungen"
 
+  if [ -f PAUSE ]; then
+    echo "PAUSE-Datei vorhanden — Lauf übersprungen."
+    exit 0
+  fi
+
   # Neueste SenderHitliste-Datei finden (nach Änderungsdatum)
   NEWEST=$(ls -t "$WATCH_DIR"/SenderHitliste*.xlsx 2>/dev/null | head -1)
 

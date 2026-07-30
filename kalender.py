@@ -253,6 +253,9 @@ def persist_events(conn: sqlite3.Connection, events: list[dict], berechnet_am: s
 
 
 def run():
+    if (Path(__file__).parent / "PAUSE").exists():
+        print("PAUSE-Datei vorhanden — Kalender übersprungen.")
+        return
     conn = sqlite3.connect(DB_PATH)
     heute = date.today()
 

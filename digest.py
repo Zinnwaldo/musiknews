@@ -442,6 +442,9 @@ def deploy_pages(docs_dir: Path):
 # ---------------------------------------------------------------------------
 
 def run(no_encrypt: bool = False, no_deploy: bool = False):
+    if (Path(__file__).parent / "PAUSE").exists():
+        print("PAUSE-Datei vorhanden — Digest übersprungen.")
+        return
     conn = sqlite3.connect(DB_PATH)
     heute = date.today().isoformat()
 

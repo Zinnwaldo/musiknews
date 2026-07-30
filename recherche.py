@@ -238,6 +238,9 @@ def get_tier_artists(conn: sqlite3.Connection, heute: date) -> list[dict]:
 
 
 def run(limit: int | None = None, dry_run: bool = False):
+    if (Path(__file__).parent / "PAUSE").exists():
+        print("PAUSE-Datei vorhanden — Recherche übersprungen.")
+        return
     conn = sqlite3.connect(DB_PATH)
     init_news_table(conn)
     heute = date.today()

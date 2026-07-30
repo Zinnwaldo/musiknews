@@ -1,0 +1,3 @@
+Diese Datei pausiert alle automatischen Läufe (Recherche, Kalender, Digest, Import).
+Zum Fortsetzen: Datei löschen (git rm PAUSE) oder von Claude entfernen lassen.
+Pausiert am 2026-07-30 wegen Überarbeitung der Relevanz-Kriterien.
